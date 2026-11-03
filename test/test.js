@@ -132,19 +132,29 @@ describe('FastCGI application tests', function () {
       should(req.method).be.eql('POST');
       should(req.connection.encrypted).be.eql(false);
 
-      var body = '';
-      req.on('data', function (data) {
-        body += data;
-      });
-      req.on('end', function () {
-        should(body).be.eql('{"username":"test"}');
+      // on-finished (used by body-parser) skips the body of a request whose socket isn't readable.
+      should(req.socket).be.exactly(req.connection);
+      should(req.socket.readable).be.eql(true);
 
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end();
-      });
-      req.on('error', function (err) {
-        done(err);
-      });
+      // Start reading after the body has arrived, as an app with async middleware would: it must be buffered.
+      setTimeout(function () {
+        var body = '';
+        req.on('data', function (data) {
+          body += data;
+        });
+        req.on('end', function () {
+          should(body).be.eql('{"username":"test"}');
+          // on-finished (used by body-parser and finalhandler) waits for a complete, ended request.
+          should(req.complete).be.eql(true);
+          should(req.readable).be.eql(false);
+
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end();
+        });
+        req.on('error', function (err) {
+          done(err);
+        });
+      }, 20);
     });
     server.listen(SOCK);
 
@@ -168,7 +178,7 @@ describe('FastCGI application tests', function () {
     fcgiStream.writeRecord(requestId, new fastcgi.records.Params([]));
     fcgiStream.writeRecord(requestId, new fastcgi.records.StdIn('{"username":"test"}'));
     fcgiStream.writeRecord(requestId, new fastcgi.records.StdIn(''));
-    client.end();
+    // Keep the connection open until the response arrives, like a web server does: the app answers asynchronously.
 
     // Consume the response.
     fcgiStream.on('record', function (requestId, record) {
@@ -177,6 +187,7 @@ describe('FastCGI application tests', function () {
       if (requestId !== fastcgi.constants.NULL_REQUEST_ID) {
         switch (record.TYPE) {
           case fastcgi.records.EndRequest.TYPE: {
+            client.end();
             server.close(done);
             break;
           }

@@ -41,8 +41,9 @@ function createHandler(appCb, errCb) {
           req: new http.IncomingMessage(incomingStream)
         };
 
-        // Express relies on this property being non-null.
-        request.req.connection = {};
+        // req.connection is an alias for req.socket, which is incomingStream. Keep it a real, readable stream:
+        // on-finished (used by body-parser 2) treats a request whose socket isn't readable as finished and skips
+        // its body, and Node calls resume() and destroy() on it.
 
         // FastCGI environment variables.
         request.req.env = {};
@@ -173,11 +174,14 @@ function createHandler(appCb, errCb) {
           }
         }
       } else if (record instanceof fcgi.records.StdIn) {
+        // Feed the body through the stream rather than emitting events, so data that arrives before the app
+        // reads it is buffered, and the request ends the way on-finished (used by body-parser and finalhandler)
+        // expects: complete, and no longer readable once consumed.
         if (record.data.length) {
-          request.req.emit('data', record.data);
+          request.req.push(record.data);
         } else {
-          // Emit 'end' on the IncomingMessage.
-          request.req.emit('end');
+          request.req.complete = true;
+          request.req.push(null);
         }
       }
     });
